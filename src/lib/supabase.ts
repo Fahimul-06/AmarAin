@@ -255,3 +255,39 @@ export interface AuditLog {
   ip_address: string | null;
   created_at: string;
 }
+
+export interface AdminUser extends Profile {
+  email: string;
+  wallet_balance: number;
+  total_spent: number;
+  total_recharged: number;
+}
+
+export interface AdminLawyer extends LawyerProfile {
+  profiles: Profile & { email: string };
+  wallet_balance: number;
+  total_income: number;
+  total_payouts: number;
+  total_commission: number;
+}
+
+export const adminApi = {
+  async users(): Promise<AdminUser[]> {
+    const result = await request('/admin/users');
+    return result.data ?? [];
+  },
+  async updateUser(id: string, values: Partial<AdminUser>) {
+    const result = await request(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(values) });
+    return result.data;
+  },
+  async lawyers(): Promise<AdminLawyer[]> {
+    const result = await request('/admin/lawyers');
+    return result.data ?? [];
+  },
+  async updateLawyer(id: string, values: Record<string, unknown>) {
+    return request(`/admin/lawyers/${id}`, { method: 'PATCH', body: JSON.stringify(values) });
+  },
+  async setLawyerVerification(id: string, status: 'pending' | 'verified' | 'rejected', note = '') {
+    return request(`/admin/lawyers/${id}/verification`, { method: 'PATCH', body: JSON.stringify({ status, note }) });
+  },
+};

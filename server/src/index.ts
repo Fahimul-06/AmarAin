@@ -83,6 +83,114 @@ app.post('/api/data/:table/update',requireAuth,async(req:any,res)=>{
 });
 app.post('/api/data/:table/delete',requireAuth,async(req:any,res)=>{try{await modelFor(req.params.table).deleteMany(buildFilter(req.body.filters));res.json({data:null,error:null});}catch(e:any){res.status(400).json({data:null,error:{message:e.message}});}});
 
+
+
+async function writeAudit(actorId:string, action:string, entityType:string, entityId:string, details:any={}) {
+  await modelFor('audit_logs').create({id:uuid(),actor_id:actorId,action,entity_type:entityType,entity_id:entityId,details});
+}
+
+app.get('/api/admin/users',requireAuth,requireAdmin,async(_req:any,res)=>{
+  try{
+    const profiles:any[]=await modelFor('profiles').find({}).sort({created_at:-1}).lean();
+    const ids=profiles.map(p=>p.id);
+    const [authUsers,wallets,transactions]=await Promise.all([
+      AuthUser.find({id:{$in:ids}}).lean(),
+      modelFor('wallets').find({user_id:{$in:ids}}).lean(),
+      modelFor('transactions').find({user_id:{$in:ids},status:{$ne:'failed'}}).lean(),
+    ]);
+    const emailMap=new Map((authUsers as any[]).map(u=>[u.id,u.email]));
+    const walletMap=new Map((wallets as any[]).map(w=>[w.user_id,Number(w.balance||0)]));
+    const finance=new Map<string,{spent:number;recharged:number}>();
+    for(const tx of transactions as any[]){
+      const row=finance.get(tx.user_id)||{spent:0,recharged:0};
+      const amount=Number(tx.amount||0);
+      if(['debit','payment','purchase'].includes(tx.type)) row.spent+=amount;
+      if(['deposit','credit','recharge'].includes(tx.type)) row.recharged+=amount;
+      finance.set(tx.user_id,row);
+    }
+    res.json({data:profiles.map(p=>({...p,email:emailMap.get(p.id)||'',wallet_balance:walletMap.get(p.id)||0,total_spent:finance.get(p.id)?.spent||0,total_recharged:finance.get(p.id)?.recharged||0}))});
+  }catch(e:any){res.status(500).json({error:e.message});}
+});
+
+app.patch('/api/admin/users/:id',requireAuth,requireAdmin,async(req:any,res)=>{
+  try{
+    const id=req.params.id;
+    const allowed:any={};
+    for(const key of ['full_name','phone','preferred_language','role','avatar_url']) if(req.body[key]!==undefined) allowed[key]=req.body[key];
+    if(allowed.role && !['client','lawyer','admin'].includes(allowed.role)) return res.status(400).json({error:'Invalid role'});
+    if(Object.keys(allowed).length) await modelFor('profiles').updateOne({id},{$set:allowed});
+    if(req.body.email){
+      const normalized=String(req.body.email).trim().toLowerCase();
+      const duplicate=await AuthUser.findOne({email:normalized,id:{$ne:id}});
+      if(duplicate) return res.status(409).json({error:'Email already in use'});
+      await AuthUser.updateOne({id},{$set:{email:normalized}});
+    }
+    await writeAudit(req.user.sub,'admin_update_user','profiles',id,{fields:Object.keys(req.body)});
+    const profile=await modelFor('profiles').findOne({id}).lean();
+    const authUser=await AuthUser.findOne({id}).lean();
+    res.json({data:{...profile,email:(authUser as any)?.email||''}});
+  }catch(e:any){res.status(500).json({error:e.message});}
+});
+
+app.get('/api/admin/lawyers',requireAuth,requireAdmin,async(_req:any,res)=>{
+  try{
+    const lawyers:any[]=await modelFor('lawyer_profiles').find({}).sort({created_at:-1}).lean();
+    const userIds=lawyers.map(l=>l.user_id);
+    const [profiles,authUsers,wallets,transactions]=await Promise.all([
+      modelFor('profiles').find({id:{$in:userIds}}).lean(),
+      AuthUser.find({id:{$in:userIds}}).lean(),
+      modelFor('wallets').find({user_id:{$in:userIds}}).lean(),
+      modelFor('transactions').find({user_id:{$in:userIds},status:{$ne:'failed'}}).lean(),
+    ]);
+    const profileMap=new Map((profiles as any[]).map(p=>[p.id,p]));
+    const emailMap=new Map((authUsers as any[]).map(u=>[u.id,u.email]));
+    const walletMap=new Map((wallets as any[]).map(w=>[w.user_id,Number(w.balance||0)]));
+    const finance=new Map<string,{income:number;payouts:number;commission:number}>();
+    for(const tx of transactions as any[]){
+      const row=finance.get(tx.user_id)||{income:0,payouts:0,commission:0};
+      const amount=Number(tx.amount||0);
+      if(['credit','earning','lawyer_income'].includes(tx.type)) row.income+=amount;
+      if(tx.type==='payout') row.payouts+=amount;
+      if(tx.type==='commission') row.commission+=amount;
+      finance.set(tx.user_id,row);
+    }
+    res.json({data:lawyers.map(l=>({...l,profiles:{...(profileMap.get(l.user_id)||{}),email:emailMap.get(l.user_id)||''},wallet_balance:walletMap.get(l.user_id)||0,total_income:finance.get(l.user_id)?.income||0,total_payouts:finance.get(l.user_id)?.payouts||0,total_commission:finance.get(l.user_id)?.commission||0}))});
+  }catch(e:any){res.status(500).json({error:e.message});}
+});
+
+app.patch('/api/admin/lawyers/:id',requireAuth,requireAdmin,async(req:any,res)=>{
+  try{
+    const lawyer:any=await modelFor('lawyer_profiles').findOne({id:req.params.id}).lean();
+    if(!lawyer)return res.status(404).json({error:'Lawyer not found'});
+    const lawyerFields=['license_number','bar_association','bio','experience_years','hourly_rate','consultation_fee','city','languages','is_available'];
+    const profileFields=['full_name','phone','preferred_language','avatar_url'];
+    const lawyerUpdate:any={}; const profileUpdate:any={};
+    for(const key of lawyerFields) if(req.body[key]!==undefined) lawyerUpdate[key]=req.body[key];
+    for(const key of profileFields) if(req.body[key]!==undefined) profileUpdate[key]=req.body[key];
+    if(Object.keys(lawyerUpdate).length) await modelFor('lawyer_profiles').updateOne({id:req.params.id},{$set:lawyerUpdate});
+    if(Object.keys(profileUpdate).length) await modelFor('profiles').updateOne({id:lawyer.user_id},{$set:profileUpdate});
+    if(req.body.email){
+      const normalized=String(req.body.email).trim().toLowerCase();
+      const duplicate=await AuthUser.findOne({email:normalized,id:{$ne:lawyer.user_id}});
+      if(duplicate)return res.status(409).json({error:'Email already in use'});
+      await AuthUser.updateOne({id:lawyer.user_id},{$set:{email:normalized}});
+    }
+    await writeAudit(req.user.sub,'admin_update_lawyer','lawyer_profiles',req.params.id,{fields:Object.keys(req.body)});
+    res.json({success:true});
+  }catch(e:any){res.status(500).json({error:e.message});}
+});
+
+app.patch('/api/admin/lawyers/:id/verification',requireAuth,requireAdmin,async(req:any,res)=>{
+  try{
+    const status=String(req.body.status||'');
+    if(!['pending','verified','rejected'].includes(status))return res.status(400).json({error:'Invalid verification status'});
+    const result=await modelFor('lawyer_profiles').updateOne({id:req.params.id},{$set:{verification_status:status,verification_note:req.body.note||null,verified_at:status==='verified'?new Date():null,verified_by:req.user.sub}});
+    if(!result.matchedCount)return res.status(404).json({error:'Lawyer not found'});
+    await writeAudit(req.user.sub,`lawyer_${status}`,'lawyer_profiles',req.params.id,{note:req.body.note||null});
+    res.json({success:true,status});
+  }catch(e:any){res.status(500).json({error:e.message});}
+});
+
 app.post('/api/ai-assistant',requireAuth,async(req:any,res)=>{
   const {message,question,language='en',conversation_id}=req.body;
   const prompt=message||question||'';

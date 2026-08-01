@@ -1,22 +1,22 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Users, ShieldCheck, CreditCard, AlertTriangle, Banknote, Wallet, Bot, BarChart3, History, Lock, Settings as SettingsIcon, Calendar, FileText, Receipt, Star, BookOpen, BadgeCheck, XCircle, Loader2, Check } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { Users, ShieldCheck, CreditCard, AlertTriangle, Banknote, Wallet, Bot, BarChart3, History, Lock, Settings as SettingsIcon, Calendar, FileText, Receipt, Star, BookOpen, BadgeCheck, XCircle, Loader2, Check, Pencil, X } from 'lucide-react';
+import { supabase, adminApi } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
-import type { Profile, LawyerProfile, Consultation, Transaction, Dispute, Article, AuditLog } from '@/lib/supabase';
+import type { Profile, Consultation, Transaction, Dispute, Article, AuditLog, AdminUser, AdminLawyer } from '@/lib/supabase';
 import { DashboardShell, StatCard, adminNav } from '@/components/DashboardShell';
 import { LoadingSpinner, EmptyState } from '@/components/LawyerCard';
 import i18n from '@/lib/i18n';
 
-type LawyerRow = LawyerProfile & { profiles: Profile };
+type EditorState = { kind: 'user' | 'lawyer'; data: Record<string, any> } | null;
 
 export default function AdminDashboard() {
   const { t } = useTranslation();
   const isBn = i18n.language === 'bn';
   const { profile } = useAuth();
   const [active, setActive] = useState('overview');
-  const [users, setUsers] = useState<Profile[]>([]);
-  const [lawyers, setLawyers] = useState<LawyerRow[]>([]);
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [lawyers, setLawyers] = useState<AdminLawyer[]>([]);
   const [consultations, setConsultations] = useState<Consultation[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [disputes, setDisputes] = useState<Dispute[]>([]);
@@ -25,20 +25,23 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState({ siteName: 'Amar Ain', commissionRate: 5, minPayout: 1000, aiEnabled: true, maintenance: false, signup: true });
   const [settingsSaved, setSettingsSaved] = useState(false);
+  const [editor, setEditor] = useState<EditorState>(null);
+  const [saving, setSaving] = useState(false);
+  const [actionError, setActionError] = useState('');
 
   useEffect(() => {
     (async () => {
       const [u, l, c, tx, dp, ar, al] = await Promise.all([
-        supabase.from('profiles').select('*').order('created_at', { ascending: false }),
-        supabase.from('lawyer_profiles').select('*, profiles!inner ( id, full_name, phone, avatar_url, role, preferred_language, created_at, updated_at )').order('created_at', { ascending: false }),
+        adminApi.users(),
+        adminApi.lawyers(),
         supabase.from('consultations').select('*').order('created_at', { ascending: false }).limit(50),
         supabase.from('transactions').select('*').order('created_at', { ascending: false }).limit(50),
         supabase.from('disputes').select('*').order('created_at', { ascending: false }),
         supabase.from('articles').select('*').order('created_at', { ascending: false }),
         supabase.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(30),
       ]);
-      setUsers((u.data as Profile[]) ?? []);
-      setLawyers((l.data as unknown as LawyerRow[]) ?? []);
+      setUsers(u);
+      setLawyers(l);
       setConsultations((c.data as Consultation[]) ?? []);
       setTransactions((tx.data as Transaction[]) ?? []);
       setDisputes((dp.data as Dispute[]) ?? []);
@@ -70,9 +73,26 @@ export default function AdminDashboard() {
 
   const verifyLawyer = async (id: string, approve: boolean) => {
     const status = approve ? 'verified' : 'rejected';
-    await supabase.from('lawyer_profiles').update({ verification_status: status, updated_at: new Date().toISOString() }).eq('id', id);
-    setLawyers((ls) => ls.map((l) => (l.id === id ? { ...l, verification_status: status } : l)));
-    logAction(approve ? 'verify_lawyer' : 'reject_lawyer', 'lawyer_profiles', id);
+    setActionError('');
+    try {
+      await adminApi.setLawyerVerification(id, status);
+      setLawyers((ls) => ls.map((l) => (l.id === id ? { ...l, verification_status: status } : l)));
+    } catch (error: any) { setActionError(error.message); }
+  };
+
+  const saveEditor = async () => {
+    if (!editor) return;
+    setSaving(true); setActionError('');
+    try {
+      if (editor.kind === 'user') {
+        const updated = await adminApi.updateUser(editor.data.id, editor.data);
+        setUsers((rows) => rows.map((row) => row.id === editor.data.id ? { ...row, ...updated, ...editor.data } : row));
+      } else {
+        await adminApi.updateLawyer(editor.data.id, editor.data);
+        setLawyers((rows) => rows.map((row) => row.id === editor.data.id ? { ...row, ...editor.data, profiles: { ...row.profiles, full_name: editor.data.full_name, phone: editor.data.phone, email: editor.data.email } } : row));
+      }
+      setEditor(null);
+    } catch (error: any) { setActionError(error.message); } finally { setSaving(false); }
   };
 
   const resolveDispute = async (id: string, resolution: 'resolved' | 'rejected') => {
@@ -94,6 +114,7 @@ export default function AdminDashboard() {
       activeKey={active}
       onNavigate={setActive}
     >
+      {actionError && <div className="mb-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{actionError}</div>}
       {active === 'overview' && (
         <div className="space-y-6">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -132,27 +153,19 @@ export default function AdminDashboard() {
 
       {active === 'users' && (
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="font-semibold text-slate-900">{t('admin.users')}</h2>
+          <div className="flex items-center justify-between"><h2 className="font-semibold text-slate-900">{t('admin.users')}</h2><span className="text-sm text-slate-500">{users.length}</span></div>
           <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 text-left text-xs text-slate-500">
-                  <th className="pb-2">{t('common.name')}</th>
-                  <th className="pb-2">{t('common.email')}</th>
-                  <th className="pb-2">{t('common.role')}</th>
-                  <th className="pb-2">{t('common.date')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((u) => (
-                  <tr key={u.id} className="border-b border-slate-50">
-                    <td className="py-3 font-medium text-slate-900">{u.full_name}</td>
-                    <td className="py-3 text-slate-600">{u.id.slice(0, 8)}...</td>
-                    <td className="py-3"><span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs">{t(`common.${u.role}`)}</span></td>
-                    <td className="py-3 text-slate-500">{new Date(u.created_at).toLocaleDateString()}</td>
-                  </tr>
-                ))}
-              </tbody>
+            <table className="w-full min-w-[900px] text-sm">
+              <thead><tr className="border-b border-slate-100 text-left text-xs text-slate-500">
+                <th className="pb-2">{t('common.name')}</th><th className="pb-2">{t('common.email')}</th><th className="pb-2">{t('common.role')}</th>
+                <th className="pb-2">{isBn ? 'ওয়ালেট' : 'Wallet'}</th><th className="pb-2">{isBn ? 'মোট খরচ' : 'Total Spent'}</th><th className="pb-2">{isBn ? 'মোট রিচার্জ' : 'Total Recharge'}</th><th className="pb-2">{isBn ? 'কাজ' : 'Action'}</th>
+              </tr></thead>
+              <tbody>{users.map((u) => (<tr key={u.id} className="border-b border-slate-50">
+                <td className="py-3 font-medium text-slate-900">{u.full_name}</td><td className="py-3 text-slate-600">{u.email}</td>
+                <td className="py-3"><span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs">{t(`common.${u.role}`)}</span></td>
+                <td className="py-3">{t('common.currency')}{Number(u.wallet_balance).toLocaleString()}</td><td className="py-3 text-rose-600">{t('common.currency')}{Number(u.total_spent).toLocaleString()}</td><td className="py-3 text-emerald-600">{t('common.currency')}{Number(u.total_recharged).toLocaleString()}</td>
+                <td className="py-3"><button onClick={() => setEditor({kind:'user',data:{...u}})} className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium hover:bg-slate-200"><Pencil className="h-3.5 w-3.5" />{isBn ? 'সম্পাদনা' : 'Edit'}</button></td>
+              </tr>))}</tbody>
             </table>
           </div>
         </div>
@@ -161,27 +174,10 @@ export default function AdminDashboard() {
       {active === 'lawyers' && (
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="font-semibold text-slate-900">{t('admin.lawyers')}</h2>
-          <div className="mt-4 space-y-3">
-            {lawyers.map((l) => (
-              <div key={l.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-100 text-sm font-bold text-emerald-700">
-                    {l.profiles.full_name.charAt(0).toUpperCase()}
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">{l.profiles.full_name}</p>
-                    <p className="text-xs text-slate-500">{l.city ?? ''} · {l.experience_years} {t('common.yearsExperience')}</p>
-                  </div>
-                </div>
-                <span className={`rounded-full px-3 py-1 text-xs font-medium ${
-                  l.verification_status === 'verified' ? 'bg-emerald-100 text-emerald-700' :
-                  l.verification_status === 'rejected' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'
-                }`}>
-                  {t(`common.${l.verification_status}`)}
-                </span>
-              </div>
-            ))}
-          </div>
+          <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[1000px] text-sm">
+            <thead><tr className="border-b border-slate-100 text-left text-xs text-slate-500"><th className="pb-2">{t('common.name')}</th><th className="pb-2">{t('common.licenseNumber')}</th><th className="pb-2">{isBn?'অবস্থা':'Status'}</th><th className="pb-2">{isBn?'মোট আয়':'Total Income'}</th><th className="pb-2">{isBn?'উত্তোলন':'Payouts'}</th><th className="pb-2">{isBn?'ওয়ালেট':'Wallet'}</th><th className="pb-2">{isBn?'কাজ':'Action'}</th></tr></thead>
+            <tbody>{lawyers.map((l)=><tr key={l.id} className="border-b border-slate-50"><td className="py-3"><div className="font-medium text-slate-900">{l.profiles.full_name}</div><div className="text-xs text-slate-500">{l.profiles.email}</div></td><td className="py-3">{l.license_number||'-'}</td><td className="py-3"><span className={`rounded-full px-2 py-1 text-xs ${l.verification_status==='verified'?'bg-emerald-100 text-emerald-700':l.verification_status==='rejected'?'bg-rose-100 text-rose-700':'bg-amber-100 text-amber-700'}`}>{t(`common.${l.verification_status}`)}</span></td><td className="py-3 font-semibold text-emerald-700">{t('common.currency')}{Number(l.total_income).toLocaleString()}</td><td className="py-3">{t('common.currency')}{Number(l.total_payouts).toLocaleString()}</td><td className="py-3">{t('common.currency')}{Number(l.wallet_balance).toLocaleString()}</td><td className="py-3"><button onClick={()=>setEditor({kind:'lawyer',data:{...l,full_name:l.profiles.full_name,phone:l.profiles.phone,email:l.profiles.email}})} className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium hover:bg-slate-200"><Pencil className="h-3.5 w-3.5" />{isBn?'সম্পাদনা':'Edit'}</button></td></tr>)}</tbody>
+          </table></div>
         </div>
       )}
 
@@ -434,6 +430,28 @@ export default function AdminDashboard() {
               </button>
             </div>
             <button onClick={saveSettings} className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">{t('admin.saveSettings')}</button>
+          </div>
+        </div>
+      )}
+      {editor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+            <div className="flex items-center justify-between"><h3 className="text-lg font-semibold">{editor.kind==='user' ? (isBn?'ব্যবহারকারী সম্পাদনা':'Edit User') : (isBn?'আইনজীবীর তথ্য সম্পাদনা':'Edit Lawyer')}</h3><button onClick={()=>setEditor(null)}><X className="h-5 w-5" /></button></div>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              <label className="text-sm"><span className="mb-1 block font-medium">{t('common.name')}</span><input value={editor.data.full_name||''} onChange={e=>setEditor({...editor,data:{...editor.data,full_name:e.target.value}})} className="w-full rounded-xl border px-3 py-2" /></label>
+              <label className="text-sm"><span className="mb-1 block font-medium">{t('common.email')}</span><input value={editor.data.email||''} onChange={e=>setEditor({...editor,data:{...editor.data,email:e.target.value}})} className="w-full rounded-xl border px-3 py-2" /></label>
+              <label className="text-sm"><span className="mb-1 block font-medium">{t('common.phone')}</span><input value={editor.data.phone||''} onChange={e=>setEditor({...editor,data:{...editor.data,phone:e.target.value}})} className="w-full rounded-xl border px-3 py-2" /></label>
+              {editor.kind==='user' && <label className="text-sm"><span className="mb-1 block font-medium">{t('common.role')}</span><select value={editor.data.role||'client'} onChange={e=>setEditor({...editor,data:{...editor.data,role:e.target.value}})} className="w-full rounded-xl border px-3 py-2"><option value="client">Client</option><option value="lawyer">Lawyer</option><option value="admin">Admin</option></select></label>}
+              {editor.kind==='lawyer' && <>
+                <label className="text-sm"><span className="mb-1 block font-medium">{t('common.licenseNumber')}</span><input value={editor.data.license_number||''} onChange={e=>setEditor({...editor,data:{...editor.data,license_number:e.target.value}})} className="w-full rounded-xl border px-3 py-2" /></label>
+                <label className="text-sm"><span className="mb-1 block font-medium">{t('common.barAssociation')}</span><input value={editor.data.bar_association||''} onChange={e=>setEditor({...editor,data:{...editor.data,bar_association:e.target.value}})} className="w-full rounded-xl border px-3 py-2" /></label>
+                <label className="text-sm"><span className="mb-1 block font-medium">{t('common.city')}</span><input value={editor.data.city||''} onChange={e=>setEditor({...editor,data:{...editor.data,city:e.target.value}})} className="w-full rounded-xl border px-3 py-2" /></label>
+                <label className="text-sm"><span className="mb-1 block font-medium">{t('common.yearsExperience')}</span><input type="number" value={editor.data.experience_years||0} onChange={e=>setEditor({...editor,data:{...editor.data,experience_years:Number(e.target.value)}})} className="w-full rounded-xl border px-3 py-2" /></label>
+                <label className="text-sm"><span className="mb-1 block font-medium">{t('common.consultationFee')}</span><input type="number" value={editor.data.consultation_fee||0} onChange={e=>setEditor({...editor,data:{...editor.data,consultation_fee:Number(e.target.value)}})} className="w-full rounded-xl border px-3 py-2" /></label>
+                <label className="text-sm sm:col-span-2"><span className="mb-1 block font-medium">{t('common.bio')}</span><textarea value={editor.data.bio||''} onChange={e=>setEditor({...editor,data:{...editor.data,bio:e.target.value}})} className="min-h-24 w-full rounded-xl border px-3 py-2" /></label>
+              </>}
+            </div>
+            <div className="mt-6 flex justify-end gap-3"><button onClick={()=>setEditor(null)} className="rounded-xl border px-4 py-2 text-sm">{t('common.cancel')}</button><button disabled={saving} onClick={saveEditor} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{saving&&<Loader2 className="h-4 w-4 animate-spin" />}{isBn?'সংরক্ষণ করুন':'Save Changes'}</button></div>
           </div>
         </div>
       )}
