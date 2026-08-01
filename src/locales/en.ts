@@ -776,6 +776,7 @@ export const en = {
     subscribed: 'Subscribed successfully!',
     followUs: 'Follow Us',
     disclaimer: 'Amar Ain is a platform connecting clients with lawyers. We are not a law firm and do not provide legal advice directly.',
+    adminLogin: 'Admin Login',
   },
   validation: {
     required: 'This field is required',
