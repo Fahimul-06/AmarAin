@@ -8,9 +8,16 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { v4 as uuid } from 'uuid';
 import path from 'node:path';
+import http from 'node:http';
+import { Server as SocketIOServer } from 'socket.io';
 import { fileURLToPath } from 'node:url';
 
 const app = express();
+const httpServer = http.createServer(app);
+const io = new SocketIOServer(httpServer, {
+  path: '/socket.io',
+  cors: { origin: process.env.CLIENT_URL?.split(',') || true, credentials: true },
+});
 const PORT = Number(process.env.PORT || 5000);
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-development-secret-at-least-32-characters';
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/amar_ain';
@@ -247,6 +254,75 @@ app.post('/api/ai-assistant',requireAuth,async(req:any,res)=>{
   res.json({answer,citations:best?.citations||[],suggested_lawyers:[],conversation_id:conversationId,confidence:best?'medium':'low',disclaimer:language==='bn'?'এটি সাধারণ আইনি তথ্য, চূড়ান্ত আইনি পরামর্শ নয়।':'This is general legal information, not definitive legal advice.'});
 });
 
+
+
+type RoomKind = 'document' | 'consultation';
+async function canAccessRoom(userId:string, role:string|undefined, kind:RoomKind, roomId:string) {
+  if (role === 'admin') return true;
+  const table = kind === 'document' ? 'document_requests' : 'consultations';
+  const record:any = await modelFor(table).findOne({ id: roomId }).lean();
+  if (!record) return false;
+  return [record.client_id, record.lawyer_id, record.assigned_lawyer_id].filter(Boolean).includes(userId);
+}
+
+io.use((socket,next)=>{
+  try {
+    const raw = socket.handshake.auth?.token || String(socket.handshake.headers.authorization||'').replace(/^Bearer\s+/i,'');
+    if (!raw) return next(new Error('Authentication required'));
+    const payload = jwt.verify(raw, JWT_SECRET) as TokenPayload;
+    socket.data.user = payload;
+    next();
+  } catch { next(new Error('Invalid or expired token')); }
+});
+
+io.on('connection',(socket)=>{
+  socket.on('room:join', async (payload:{kind:RoomKind;roomId:string}, ack?:Function)=>{
+    try {
+      const {kind,roomId}=payload||{};
+      if(!['document','consultation'].includes(kind)||!roomId) throw new Error('Invalid room');
+      const user=socket.data.user as TokenPayload;
+      if(!await canAccessRoom(user.sub,user.role,kind,roomId)) throw new Error('Room access denied');
+      const room=`${kind}:${roomId}`;
+      await socket.join(room);
+      socket.data.activeRoom=room;
+      socket.to(room).emit('room:peer-joined',{userId:user.sub});
+      ack?.({ok:true,room});
+    } catch(e:any){ack?.({ok:false,error:e.message});}
+  });
+
+  socket.on('message:send', async (payload:{kind:RoomKind;roomId:string;body:string}, ack?:Function)=>{
+    try {
+      const {kind,roomId}=payload||{}; const body=String(payload?.body||'').trim();
+      if(!body) throw new Error('Message cannot be empty');
+      if(body.length>5000) throw new Error('Message is too long');
+      const user=socket.data.user as TokenPayload;
+      if(!await canAccessRoom(user.sub,user.role,kind,roomId)) throw new Error('Room access denied');
+      const message:any={id:uuid(),sender_id:user.sub,body,consultation_id:kind==='consultation'?roomId:null,document_request_id:kind==='document'?roomId:null,created_at:new Date()};
+      const saved:any=await modelFor('messages').create(message);
+      const json=saved.toObject ? saved.toObject() : saved;
+      io.to(`${kind}:${roomId}`).emit('message:new',json);
+      ack?.({ok:true,data:json});
+    } catch(e:any){ack?.({ok:false,error:e.message});}
+  });
+
+  for (const event of ['webrtc:offer','webrtc:answer','webrtc:ice','call:invite','call:end','call:media-state']) {
+    socket.on(event, async (payload:any, ack?:Function)=>{
+      try {
+        const {kind,roomId}=payload||{};
+        const user=socket.data.user as TokenPayload;
+        if(!await canAccessRoom(user.sub,user.role,kind,roomId)) throw new Error('Room access denied');
+        socket.to(`${kind}:${roomId}`).emit(event,{...payload,from:user.sub});
+        ack?.({ok:true});
+      } catch(e:any){ack?.({ok:false,error:e.message});}
+    });
+  }
+
+  socket.on('disconnect',()=>{
+    const room=socket.data.activeRoom;
+    if(room) socket.to(room).emit('room:peer-left',{userId:(socket.data.user as TokenPayload)?.sub});
+  });
+});
+
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const clientDist=path.resolve(__dirname,'../../dist');
 if(process.env.NODE_ENV==='production'){app.use(express.static(clientDist));app.get('*',(req,res)=>{if(req.path.startsWith('/api/'))return res.status(404).json({error:'Not found'});res.sendFile(path.join(clientDist,'index.html'));});}
@@ -281,6 +357,6 @@ async function ensureEnvironmentAdmin() {
 async function start(){
   await mongoose.connect(MONGODB_URI);
   await ensureEnvironmentAdmin();
-  app.listen(PORT,()=>console.log(`Amar Ain API listening on ${PORT}`));
+  httpServer.listen(PORT,()=>console.log(`Amar Ain API and realtime server listening on ${PORT}`));
 }
 start().catch(e=>{console.error(e);process.exit(1)});

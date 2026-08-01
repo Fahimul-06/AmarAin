@@ -20,6 +20,7 @@ import FaqPage from '@/pages/FaqPage';
 import ClientDashboard from '@/pages/ClientDashboard';
 import LawyerDashboard from '@/pages/LawyerDashboard';
 import AdminDashboard from '@/pages/AdminDashboard';
+import CallRoomPage from '@/pages/CallRoomPage';
 import type { Role } from '@/lib/supabase';
 
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: Role[] }) {
@@ -53,6 +54,7 @@ function AppRoutes() {
         <Route path="/dashboard" element={<ProtectedRoute roles={['client', 'admin']}><ClientDashboard /></ProtectedRoute>} />
         <Route path="/lawyer" element={<ProtectedRoute roles={['lawyer', 'admin']}><LawyerDashboard /></ProtectedRoute>} />
         <Route path="/admin" element={<ProtectedRoute roles={['admin']}><AdminDashboard /></ProtectedRoute>} />
+        <Route path="/call/:kind/:roomId" element={<ProtectedRoute roles={['client', 'lawyer', 'admin']}><CallRoomPage /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
