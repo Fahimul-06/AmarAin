@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Users, ShieldCheck, CreditCard, AlertTriangle, Banknote, Wallet, Bot, BarChart3, History, Lock, Settings as SettingsIcon, Calendar, FileText, Receipt, Star, BookOpen, BadgeCheck, XCircle, Loader2, Check, Pencil, X } from 'lucide-react';
-import { supabase, adminApi } from '@/lib/supabase';
+import { supabase, adminApi, apiRequest } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import type { Profile, Consultation, Transaction, Dispute, Article, AuditLog, AdminUser, AdminLawyer } from '@/lib/supabase';
 import { DashboardShell, StatCard, adminNav } from '@/components/DashboardShell';
@@ -99,6 +99,15 @@ export default function AdminDashboard() {
     await supabase.from('disputes').update({ status: resolution, updated_at: new Date().toISOString() }).eq('id', id);
     setDisputes((ds) => ds.map((d) => (d.id === id ? { ...d, status: resolution } : d)));
     logAction(`dispute_${resolution}`, 'disputes', id);
+  };
+
+  const verifyComplaint = async (dispute: Dispute, decision: 'verified' | 'rejected') => {
+    const note = window.prompt(isBn ? 'সিদ্ধান্তের নোট লিখুন (ঐচ্ছিক):' : 'Add an administrator note (optional):') || '';
+    setActionError('');
+    try {
+      const result = await apiRequest(`/admin/disputes/${dispute.id}/verify`, { method: 'POST', body: JSON.stringify({ decision, note }) });
+      setDisputes(rows => rows.map(row => row.id === dispute.id ? { ...row, ...(result.data || {}), status: decision === 'verified' ? 'resolved' : 'rejected', admin_verification: decision, admin_note: note } : row));
+    } catch (error:any) { setActionError(error.message || 'Could not verify complaint.'); }
   };
 
   const saveSettings = () => {
@@ -304,10 +313,23 @@ export default function AdminDashboard() {
                     <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">{t(`common.${d.status}`)}</span>
                   </div>
                   {d.description && <p className="mt-1 text-sm text-slate-500">{d.description}</p>}
+                  {d.reasons && d.reasons.length > 0 && <p className="mt-2 text-xs text-slate-500">{isBn ? 'ক্লায়েন্টের কারণ' : 'Client reasons'}: {d.reasons.join(', ')}</p>}
+                  {d.lawyer_complaint && (
+                    <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50 p-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">{isBn ? 'আইনজীবীর অভিযোগ' : 'Lawyer complaint'}</p>
+                      <p className="mt-1 text-sm text-slate-700">{d.lawyer_complaint}</p>
+                    </div>
+                  )}
+                  {d.admin_verification && <p className="mt-2 text-xs font-semibold text-slate-600">{isBn ? 'যাচাইয়ের সিদ্ধান্ত' : 'Verification decision'}: {d.admin_verification}</p>}
                   {(d.status === 'open' || d.status === 'under_review') && (
-                    <div className="mt-3 flex gap-2">
-                      <button onClick={() => resolveDispute(d.id, 'resolved')} className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t('admin.resolveDispute')}</button>
-                      <button onClick={() => resolveDispute(d.id, 'rejected')} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100">{t('admin.rejectDispute')}</button>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {d.lawyer_complaint ? <>
+                        <button onClick={() => verifyComplaint(d, 'verified')} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700">{isBn ? 'অভিযোগ যাচাই করুন' : 'Verify complaint'}</button>
+                        <button onClick={() => verifyComplaint(d, 'rejected')} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100">{isBn ? 'অভিযোগ প্রত্যাখ্যান করুন' : 'Reject complaint'}</button>
+                      </> : <>
+                        <button onClick={() => resolveDispute(d.id, 'resolved')} className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t('admin.resolveDispute')}</button>
+                        <button onClick={() => resolveDispute(d.id, 'rejected')} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100">{t('admin.rejectDispute')}</button>
+                      </>}
                     </div>
                   )}
                 </div>

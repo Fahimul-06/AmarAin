@@ -333,6 +333,77 @@ app.post('/api/consultations/:id/client-complete', requireAuth, async (req:any, 
   } finally { await dbSession.endSession(); }
 });
 
+
+app.post('/api/consultations/:id/client-not-complete', requireAuth, async (req:any, res) => {
+  try {
+    if (req.user.role !== 'client' && req.user.role !== 'admin') return res.status(403).json({ error: 'Only the consultation client can report that the service was not completed.' });
+    const reasons = Array.isArray(req.body?.reasons) ? req.body.reasons.map((value:any) => String(value).trim()).filter(Boolean) : [];
+    const description = String(req.body?.description || '').trim();
+    if (!reasons.length) return res.status(400).json({ error: 'Select at least one reason.' });
+    const filter:any = { id: req.params.id, status: 'awaiting_client_completion' };
+    if (req.user.role !== 'admin') filter.client_id = req.user.sub;
+    const now = new Date();
+    const consultation:any = await modelFor('consultations').findOneAndUpdate(filter, { $set: {
+      status: 'disputed', client_completion_response: 'not_completed', client_not_completed_reasons: reasons,
+      client_not_completed_description: description || null, client_disputed_at: now, updated_at: now,
+    } }, { new: true }).lean();
+    if (!consultation) return res.status(409).json({ error: 'This consultation is no longer waiting for your response.' });
+    const existing:any = await modelFor('disputes').findOne({ consultation_id: consultation.id, source: 'client_not_completed' }).lean();
+    const dispute = existing || await modelFor('disputes').create({
+      id: uuid(), consultation_id: consultation.id, client_id: consultation.client_id, lawyer_id: consultation.lawyer_id,
+      raised_by: consultation.client_id, against_user_id: consultation.lawyer_id, source: 'client_not_completed',
+      reason: reasons.join(', '), reasons, description: description || null, status: 'open', lawyer_complaint_status: 'not_submitted',
+    });
+    await modelFor('notifications').create({ id: uuid(), user_id: consultation.lawyer_id, type: 'consultation_not_completed',
+      title_en: 'Client reported consultation not completed', title_bn: 'ক্লায়েন্ট পরামর্শ সম্পন্ন হয়নি বলে জানিয়েছেন',
+      body_en: `Reason: ${reasons.join(', ')}`, body_bn: `কারণ: ${reasons.join(', ')}`, is_read: false, consultation_id: consultation.id, dispute_id: dispute.id });
+    io.to(`consultation:${consultation.id}`).emit('consultation:disputed', { consultationId: consultation.id, reasons, description });
+    res.json({ data: consultation, dispute });
+  } catch (error:any) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/consultations/:id/lawyer-complaint', requireAuth, async (req:any, res) => {
+  try {
+    if (req.user.role !== 'lawyer' && req.user.role !== 'admin') return res.status(403).json({ error: 'Only the assigned lawyer can submit this complaint.' });
+    const complaint = String(req.body?.complaint || '').trim();
+    if (complaint.length < 10) return res.status(400).json({ error: 'Please describe the complaint in at least 10 characters.' });
+    const consultationFilter:any = { id: req.params.id, status: 'disputed' };
+    if (req.user.role !== 'admin') consultationFilter.lawyer_id = req.user.sub;
+    const consultation:any = await modelFor('consultations').findOne(consultationFilter).lean();
+    if (!consultation) return res.status(404).json({ error: 'Disputed consultation not found or access denied.' });
+    const now = new Date();
+    const dispute:any = await modelFor('disputes').findOneAndUpdate(
+      { consultation_id: consultation.id, source: 'client_not_completed' },
+      { $set: { lawyer_complaint: complaint, lawyer_complaint_status: 'submitted', lawyer_complained_at: now, status: 'under_review', updated_at: now },
+        $setOnInsert: { id: uuid(), client_id: consultation.client_id, lawyer_id: consultation.lawyer_id, raised_by: consultation.client_id, against_user_id: consultation.lawyer_id, source: 'client_not_completed', reason: 'Client reported consultation not completed' } },
+      { upsert: true, new: true }
+    ).lean();
+    await modelFor('consultations').updateOne({ id: consultation.id }, { $set: { lawyer_complaint_status: 'submitted', lawyer_complaint: complaint, updated_at: now } });
+    await modelFor('notifications').create({ id: uuid(), user_id: consultation.client_id, type: 'lawyer_complaint_submitted', title_en: 'Lawyer submitted a complaint', title_bn: 'আইনজীবী অভিযোগ জমা দিয়েছেন', body_en: 'The lawyer submitted a complaint for administrator review.', body_bn: 'আইনজীবী প্রশাসকের পর্যালোচনার জন্য অভিযোগ জমা দিয়েছেন।', is_read: false, consultation_id: consultation.id, dispute_id: dispute.id });
+    await writeAudit(req.user.sub, 'lawyer_complaint_submitted', 'disputes', dispute.id, { consultation_id: consultation.id });
+    res.json({ data: dispute });
+  } catch (error:any) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/admin/disputes/:id/verify', requireAuth, requireAdmin, async (req:any, res) => {
+  try {
+    const decision = req.body?.decision === 'verified' ? 'verified' : req.body?.decision === 'rejected' ? 'rejected' : null;
+    const note = String(req.body?.note || '').trim();
+    if (!decision) return res.status(400).json({ error: 'Decision must be verified or rejected.' });
+    const now = new Date();
+    const dispute:any = await modelFor('disputes').findOneAndUpdate({ id: req.params.id }, { $set: {
+      status: decision === 'verified' ? 'resolved' : 'rejected', admin_verification: decision, admin_note: note || null,
+      verified_by: req.user.sub, verified_at: now, updated_at: now,
+    } }, { new: true }).lean();
+    if (!dispute) return res.status(404).json({ error: 'Complaint not found.' });
+    if (dispute.consultation_id) await modelFor('consultations').updateOne({ id: dispute.consultation_id }, { $set: { complaint_verification_status: decision, complaint_verified_at: now, updated_at: now } });
+    const recipients = [dispute.client_id, dispute.lawyer_id].filter(Boolean);
+    if (recipients.length) await modelFor('notifications').insertMany(recipients.map((user_id:string) => ({ id: uuid(), user_id, type: 'complaint_verified', title_en: 'Complaint review completed', title_bn: 'অভিযোগ পর্যালোচনা সম্পন্ন', body_en: `Administrator decision: ${decision}.`, body_bn: `প্রশাসকের সিদ্ধান্ত: ${decision === 'verified' ? 'যাচাই করা হয়েছে' : 'প্রত্যাখ্যাত'}।`, is_read: false, dispute_id: dispute.id })));
+    await writeAudit(req.user.sub, `complaint_${decision}`, 'disputes', dispute.id, { note });
+    res.json({ data: dispute });
+  } catch (error:any) { res.status(500).json({ error: error.message }); }
+});
+
 type RoomKind = 'document' | 'consultation';
 async function canAccessRoom(userId:string, role:string|undefined, kind:RoomKind, roomId:string) {
   if (role === 'admin') return true;

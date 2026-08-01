@@ -275,6 +275,24 @@ export default function LawyerDashboard() {
     }
   };
 
+  const submitConsultationComplaint = async (consultation: Consultation) => {
+    const complaint = window.prompt(isBn()
+      ? 'ক্লায়েন্টের “সম্পন্ন হয়নি” দাবির বিরুদ্ধে আপনার অভিযোগ ও ঘটনার বিবরণ লিখুন:'
+      : 'Describe your complaint and what happened regarding the client’s “not completed” report:');
+    if (!complaint) return;
+    if (complaint.trim().length < 10) {
+      window.alert(isBn() ? 'কমপক্ষে ১০ অক্ষরে অভিযোগ লিখুন।' : 'Please write at least 10 characters.');
+      return;
+    }
+    try {
+      await apiRequest(`/consultations/${consultation.id}/lawyer-complaint`, { method: 'POST', body: JSON.stringify({ complaint }) });
+      setConsultations(items => items.map(item => item.id === consultation.id ? { ...item, lawyer_complaint: complaint.trim(), lawyer_complaint_status: 'submitted' } : item));
+      window.alert(isBn() ? 'অভিযোগ প্রশাসকের যাচাইয়ের জন্য পাঠানো হয়েছে।' : 'Complaint submitted for administrator verification.');
+    } catch (error:any) {
+      window.alert(error.message || 'Could not submit complaint.');
+    }
+  };
+
   const updateDocStatus = async (id: string, status: DocumentRequest['status']) => {
     await supabase.from('document_requests').update({ status, updated_at: new Date().toISOString() }).eq('id', id);
     setDocuments((d) => d.map((doc) => (doc.id === id ? { ...doc, status } : doc)));
@@ -485,6 +503,22 @@ export default function LawyerDashboard() {
                         <span className="text-sm font-semibold text-emerald-600">{t('common.currency')}{c.price}</span>
                       </div>
                     </div>
+                    {c.status === 'disputed' && (
+                      <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50 p-3">
+                        <p className="text-sm font-semibold text-rose-800">{isBn() ? 'ক্লায়েন্ট জানিয়েছেন সেবা সম্পন্ন হয়নি' : 'Client reported the service was not completed'}</p>
+                        <p className="mt-1 text-sm text-rose-700">{isBn() ? 'কারণ' : 'Reason'}: {(c.client_not_completed_reasons || []).join(', ') || (isBn() ? 'উল্লেখ করা হয়নি' : 'Not specified')}</p>
+                        {c.client_not_completed_description && <p className="mt-1 text-sm text-slate-600">{c.client_not_completed_description}</p>}
+                        {c.lawyer_complaint_status === 'submitted' ? (
+                          <div className="mt-2 rounded-lg bg-white px-3 py-2 text-xs text-slate-600">
+                            <p className="font-semibold text-amber-700">{isBn() ? 'অভিযোগ প্রশাসকের পর্যালোচনায় আছে' : 'Complaint is under administrator review'}</p>
+                            {c.lawyer_complaint && <p className="mt-1">{c.lawyer_complaint}</p>}
+                          </div>
+                        ) : (
+                          <button onClick={() => submitConsultationComplaint(c)} className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-rose-700"><AlertTriangle className="h-3.5 w-3.5" />{isBn() ? 'প্রশাসকের কাছে অভিযোগ করুন' : 'Complain to admin'}</button>
+                        )}
+                        {c.complaint_verification_status && <p className="mt-2 text-xs font-medium text-slate-600">{isBn() ? 'প্রশাসকের সিদ্ধান্ত' : 'Admin decision'}: {c.complaint_verification_status}</p>}
+                      </div>
+                    )}
                     {(c.status === 'pending' || c.status === 'confirmed') && (
                       <div className="mt-3 flex gap-2">
                         {c.status === 'pending' && (

@@ -119,6 +119,11 @@ export interface Consultation {
   lawyer_completed_at?: string | null;
   client_completed_at?: string | null;
   payment_released_at?: string | null;
+  client_not_completed_reasons?: string[];
+  client_not_completed_description?: string | null;
+  lawyer_complaint?: string | null;
+  lawyer_complaint_status?: 'not_submitted' | 'submitted' | 'verified' | 'rejected';
+  complaint_verification_status?: 'verified' | 'rejected' | null;
   scheduled_at: string | null;
   duration_minutes: number;
   price: number;
@@ -210,6 +215,14 @@ export interface Dispute {
   description: string | null;
   status: 'open' | 'under_review' | 'resolved' | 'rejected';
   resolution: string | null;
+  source?: string;
+  reasons?: string[];
+  client_id?: string;
+  lawyer_id?: string;
+  lawyer_complaint?: string | null;
+  lawyer_complaint_status?: string;
+  admin_verification?: 'verified' | 'rejected' | null;
+  admin_note?: string | null;
   created_at: string;
   updated_at: string;
 }
