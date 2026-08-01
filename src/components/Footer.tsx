@@ -72,7 +72,7 @@ export default function Footer() {
           <div className="mt-3 flex flex-col items-center justify-center gap-3 sm:flex-row sm:justify-between">
             <p className="text-center text-sm text-slate-500">{t('common.copyright')}</p>
             <Link
-              to="/login?portal=admin"
+              to="/admin-login"
               aria-label={t('footer.adminLogin')}
               className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2"
             >

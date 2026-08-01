@@ -211,5 +211,36 @@ const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const clientDist=path.resolve(__dirname,'../../dist');
 if(process.env.NODE_ENV==='production'){app.use(express.static(clientDist));app.get('*',(req,res)=>{if(req.path.startsWith('/api/'))return res.status(404).json({error:'Not found'});res.sendFile(path.join(clientDist,'index.html'));});}
 
-async function start(){await mongoose.connect(MONGODB_URI);app.listen(PORT,()=>console.log(`Amar Ain API listening on ${PORT}`));}
+async function ensureEnvironmentAdmin() {
+  const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  const password = process.env.ADMIN_PASSWORD;
+  if (!email || !password) {
+    console.warn('ADMIN_EMAIL or ADMIN_PASSWORD is not set; automatic admin provisioning was skipped.');
+    return;
+  }
+  if (password.length < 8) throw new Error('ADMIN_PASSWORD must be at least 8 characters long.');
+
+  let user:any = await AuthUser.findOne({ email });
+  if (!user) {
+    user = await AuthUser.create({ id: uuid(), email, password_hash: await bcrypt.hash(password, 12) });
+  } else {
+    user.password_hash = await bcrypt.hash(password, 12);
+    await user.save();
+  }
+
+  await modelFor('profiles').updateOne(
+    { id: user.id },
+    { $set: { id: user.id, full_name: 'Platform Administrator', role: 'admin', preferred_language: 'en' } },
+    { upsert: true }
+  );
+  const wallet = await modelFor('wallets').findOne({ user_id: user.id }).lean();
+  if (!wallet) await modelFor('wallets').create({ id: uuid(), user_id: user.id, balance: 0 });
+  console.log(`Administrator account ready: ${email}`);
+}
+
+async function start(){
+  await mongoose.connect(MONGODB_URI);
+  await ensureEnvironmentAdmin();
+  app.listen(PORT,()=>console.log(`Amar Ain API listening on ${PORT}`));
+}
 start().catch(e=>{console.error(e);process.exit(1)});

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Scale, Mail, Lock, AlertCircle, Loader2 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
@@ -7,8 +7,10 @@ import LanguageToggle from '@/components/LanguageToggle';
 
 export default function LoginPage() {
   const { t } = useTranslation();
-  const { signIn } = useAuth();
+  const { signIn, signOut } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const isAdminPortal = searchParams.get('portal') === 'admin';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -18,12 +20,19 @@ export default function LoginPage() {
     e.preventDefault();
     setError(null);
     setLoading(true);
-    const { error } = await signIn(email, password);
+    const { error, role } = await signIn(email, password);
     setLoading(false);
     if (error) {
       setError(error);
     } else {
-      navigate('/dashboard');
+      if (isAdminPortal && role !== 'admin') {
+        await signOut();
+        setError(t('auth.adminOnly', { defaultValue: 'This account does not have administrator access.' }));
+        return;
+      }
+      if (role === 'admin') navigate('/admin', { replace: true });
+      else if (role === 'lawyer') navigate('/lawyer', { replace: true });
+      else navigate('/dashboard', { replace: true });
     }
   };
 
@@ -41,8 +50,14 @@ export default function LoginPage() {
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-xl">
-          <h1 className="text-2xl font-bold text-slate-900">{t('auth.loginTitle')}</h1>
-          <p className="mt-2 text-sm text-slate-600">{t('auth.loginSubtitle')}</p>
+          <h1 className="text-2xl font-bold text-slate-900">
+            {isAdminPortal ? t('footer.adminLogin') : t('auth.loginTitle')}
+          </h1>
+          <p className="mt-2 text-sm text-slate-600">
+            {isAdminPortal
+              ? t('auth.adminLoginSubtitle', { defaultValue: 'Sign in with the administrator credentials configured on the server.' })
+              : t('auth.loginSubtitle')}
+          </p>
 
           {error && (
             <div className="mt-4 flex items-center gap-2 rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-700">
@@ -90,12 +105,14 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <p className="mt-6 text-center text-sm text-slate-600">
-            {t('auth.noAccount')}{' '}
-            <Link to="/register" className="font-semibold text-emerald-600 hover:text-emerald-700">
-              {t('auth.signUpNow')}
-            </Link>
-          </p>
+          {!isAdminPortal && (
+            <p className="mt-6 text-center text-sm text-slate-600">
+              {t('auth.noAccount')}{' '}
+              <Link to="/register" className="font-semibold text-emerald-600 hover:text-emerald-700">
+                {t('auth.signUpNow')}
+              </Link>
+            </p>
+          )}
         </div>
       </div>
     </div>

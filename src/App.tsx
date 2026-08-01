@@ -47,6 +47,7 @@ function AppRoutes() {
         <Route path="/refund-policy" element={<RefundPage />} />
         <Route path="/faq" element={<FaqPage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/admin-login" element={<Navigate to="/login?portal=admin" replace />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/book/:id" element={<ProtectedRoute roles={['client', 'admin']}><BookingPage /></ProtectedRoute>} />
         <Route path="/dashboard" element={<ProtectedRoute roles={['client', 'admin']}><ClientDashboard /></ProtectedRoute>} />
