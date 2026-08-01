@@ -1,6 +1,35 @@
 {
-  "name":"amar-ain-server","version":"1.0.0","type":"module","main":"dist/index.js",
-  "scripts":{"dev":"tsx watch src/index.ts","build":"tsc","start":"node dist/index.js","seed":"tsx src/seed.ts"},
-  "dependencies":{"bcryptjs":"^2.4.3","cors":"^2.8.5","dotenv":"^16.4.5","express":"^4.21.1","helmet":"^8.0.0","jsonwebtoken":"^9.0.2","mongoose":"^8.8.1","morgan":"^1.10.0","uuid":"^11.0.3"},
-  "devDependencies":{"@types/cors":"^2.8.17","@types/express":"^5.0.0","@types/jsonwebtoken":"^9.0.7","@types/morgan":"^1.9.9","@types/node":"^22.10.1","tsx":"^4.19.2","typescript":"^5.7.2"}
+  "name": "amar-ain-server",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "seed": "tsx src/seed.ts"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.8.1",
+    "morgan": "^1.10.0",
+    "uuid": "^11.0.3",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/morgan": "^1.9.9",
+    "@types/node": "^22.10.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=20 <23",
+    "npm": ">=10"
+  }
 }
