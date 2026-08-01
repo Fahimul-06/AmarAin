@@ -32,6 +32,7 @@ export default function MarketplacePage() {
   const [lawyers, setLawyers] = useState<LawyerRow[]>([]);
   const [practiceAreas, setPracticeAreas] = useState<PracticeArea[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
   const [filterArea, setFilterArea] = useState('');
   const [filterCity, setFilterCity] = useState('');
@@ -40,7 +41,8 @@ export default function MarketplacePage() {
 
   useEffect(() => {
     (async () => {
-      const [{ data: lawyerData }, { data: areaData }] = await Promise.all([
+      setLoadError('');
+      const [lawyerResult, areaResult] = await Promise.all([
         supabase
           .from('lawyer_profiles')
           .select(`
@@ -54,7 +56,14 @@ export default function MarketplacePage() {
           .order('rating_avg', { ascending: false }),
         supabase.from('practice_areas').select('*').order('name_en'),
       ]);
-      setLawyers((lawyerData as unknown as LawyerRow[]) ?? []);
+      const { data: lawyerData, error: lawyerError } = lawyerResult;
+      const { data: areaData, error: areaError } = areaResult;
+      if (lawyerError || areaError) setLoadError(lawyerError?.message || areaError?.message || 'Unable to load lawyers');
+      const safeLawyers = ((lawyerData as unknown as LawyerRow[]) ?? []).map((lawyer) => ({
+        ...lawyer,
+        lawyer_practice_areas: lawyer.lawyer_practice_areas ?? [],
+      })).filter((lawyer) => lawyer.profiles);
+      setLawyers(safeLawyers);
       setPracticeAreas((areaData as PracticeArea[]) ?? []);
       setLoading(false);
     })();
@@ -69,7 +78,7 @@ export default function MarketplacePage() {
     let result = lawyers.filter((l) => {
       if (search) {
         const q = search.toLowerCase();
-        const nameMatch = l.profiles.full_name.toLowerCase().includes(q);
+        const nameMatch = (l.profiles?.full_name ?? '').toLowerCase().includes(q);
         const areaMatch = l.lawyer_practice_areas.some(
           (lpa) => lpa.practice_areas?.name_en.toLowerCase().includes(q) || lpa.practice_areas?.name_bn.includes(q)
         );
@@ -199,6 +208,8 @@ export default function MarketplacePage() {
             </div>
             {loading ? (
               <LoadingSpinner />
+            ) : loadError ? (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{loadError}</div>
             ) : filtered.length === 0 ? (
               <EmptyState message={t('marketplace.noLawyersFound')} />
             ) : (

@@ -46,7 +46,7 @@ export default function LawyerProfilePage() {
         `)
         .eq('id', id)
         .maybeSingle();
-      setLawyer(data as unknown as LawyerDetail | null);
+      setLawyer(data ? ({ ...(data as unknown as LawyerDetail), lawyer_practice_areas: (data as any).lawyer_practice_areas ?? [] } as LawyerDetail) : null);
 
       if (data) {
         const { data: reviewData } = await supabase

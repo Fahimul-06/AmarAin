@@ -65,13 +65,53 @@ app.post('/api/auth/change-password',requireAuth,async(req:any,res)=>{const {pas
 
 function buildFilter(filters:any[]=[]){const q:any={};for(const f of filters){if(f.op==='eq')q[f.field]=f.value;else if(f.op==='in')q[f.field]={$in:f.value};else if(f.op==='neq')q[f.field]={$ne:f.value};else if(f.op==='gte')q[f.field]={$gte:f.value};else if(f.op==='lte')q[f.field]={$lte:f.value};}return q;}
 const adminTables=new Set(['audit_logs']);
-app.post('/api/data/:table/query',requireAuth,async(req:any,res)=>{
+const publicReadTables=new Set(['lawyer_profiles','practice_areas','lawyer_practice_areas','reviews','articles']);
+app.post('/api/data/:table/query',async(req:any,res)=>{
   try{
-    const {table}=req.params; if(adminTables.has(table)&&req.user.role!=='admin')return res.status(403).json({error:'Forbidden'});
-    const {filters=[],order,limit,single}=req.body||{}; let query=modelFor(table).find(buildFilter(filters));
+    const {table}=req.params;
+    if(!req.user?.sub && !publicReadTables.has(table)) return res.status(401).json({error:'Authentication required'});
+    if(adminTables.has(table)&&req.user?.role!=='admin')return res.status(403).json({error:'Forbidden'});
+    const {filters=[],order,limit,single}=req.body||{};
+    const filter=buildFilter(filters);
+    // Public visitors may only see verified lawyers and published articles.
+    if(!req.user?.sub && table==='lawyer_profiles') filter.verification_status='verified';
+    if(!req.user?.sub && table==='articles') filter.status='published';
+    let query=modelFor(table).find(filter);
     if(order?.field)query=query.sort({[order.field]:order.ascending?1:-1}); if(limit)query=query.limit(Number(limit));
     let data:any=await query.lean();
-    if(table==='lawyer_profiles' && String(req.body?.select||'').includes('profiles')){const ids=data.map((x:any)=>x.user_id);const ps=await modelFor('profiles').find({id:{$in:ids}}).lean();const map=new Map(ps.map((p:any)=>[p.id,p]));data=data.map((x:any)=>({...x,profiles:map.get(x.user_id)||null}));}
+
+    if(table==='lawyer_profiles'){
+      const selectText=String(req.body?.select||'');
+      const profileIds=data.map((x:any)=>x.user_id);
+      const lawyerIds=data.map((x:any)=>x.id);
+      const [profiles,links]=await Promise.all([
+        selectText.includes('profiles') ? modelFor('profiles').find({id:{$in:profileIds}}).lean() : Promise.resolve([]),
+        selectText.includes('lawyer_practice_areas') ? modelFor('lawyer_practice_areas').find({lawyer_profile_id:{$in:lawyerIds}}).lean() : Promise.resolve([]),
+      ]);
+      const profileMap=new Map((profiles as any[]).map((p:any)=>[p.id,p]));
+      const areaIds=[...new Set((links as any[]).map((l:any)=>l.practice_area_id).filter(Boolean))];
+      const areas=areaIds.length ? await modelFor('practice_areas').find({id:{$in:areaIds}}).lean() : [];
+      const areaMap=new Map((areas as any[]).map((a:any)=>[a.id,a]));
+      const linksByLawyer=new Map<string,any[]>();
+      for(const link of links as any[]){
+        const list=linksByLawyer.get(link.lawyer_profile_id)||[];
+        list.push({practice_areas:areaMap.get(link.practice_area_id)||null});
+        linksByLawyer.set(link.lawyer_profile_id,list);
+      }
+      data=data.map((x:any)=>({
+        ...x,
+        ...(selectText.includes('profiles')?{profiles:profileMap.get(x.user_id)||null}:{}),
+        ...(selectText.includes('lawyer_practice_areas')?{lawyer_practice_areas:linksByLawyer.get(x.id)||[]}:{}),
+      }));
+    }
+
+    if(table==='reviews' && String(req.body?.select||'').includes('profiles')){
+      const clientIds=data.map((x:any)=>x.client_id).filter(Boolean);
+      const profiles=await modelFor('profiles').find({id:{$in:clientIds}}).lean();
+      const profileMap=new Map((profiles as any[]).map((p:any)=>[p.id,{full_name:p.full_name,avatar_url:p.avatar_url||null}]));
+      data=data.map((x:any)=>({...x,profiles:profileMap.get(x.client_id)||null}));
+    }
+
     res.json({data:single?(data[0]||null):data,error:null});
   }catch(e:any){res.status(400).json({data:null,error:{message:e.message}});}
 });
