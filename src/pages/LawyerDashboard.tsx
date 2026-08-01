@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Calendar, Wallet, Star, AlertTriangle, FileText, Loader2, CheckCircle2, XCircle,
@@ -11,6 +12,8 @@ import type { Consultation, Review, LawyerProfile, Transaction, DocumentRequest,
 import { DashboardShell, StatCard, lawyerNav } from '@/components/DashboardShell';
 import { LoadingSpinner, EmptyState } from '@/components/LawyerCard';
 import { ChatDrawer } from '@/components/ChatDrawer';
+import { ConsultationChatDrawer } from '@/components/ConsultationChatDrawer';
+import { getRealtimeSocket } from '@/lib/realtime';
 import i18n from '@/lib/i18n';
 
 const isBn = () => i18n.language === 'bn';
@@ -50,6 +53,7 @@ function Stars({ rating }: { rating: number }) {
 export default function LawyerDashboard() {
   const { t } = useTranslation();
   const { profile, refreshProfile } = useAuth();
+  const navigate = useNavigate();
   const [active, setActive] = useState('overview');
   const [consultations, setConsultations] = useState<Consultation[]>([]);
   const [clients, setClients] = useState<Record<string, Profile>>({});
@@ -66,6 +70,7 @@ export default function LawyerDashboard() {
   const [filter, setFilter] = useState<string>('all');
   const [saveMsg, setSaveMsg] = useState('');
   const [chatDoc, setChatDoc] = useState<DocumentRequest & { client?: Profile } | null>(null);
+  const [chatConsultation, setChatConsultation] = useState<Consultation | null>(null);
   const [emergencyReqs, setEmergencyReqs] = useState<(EmergencyRequest & { client?: Profile })[]>([]);
   const [emergencyTick, setEmergencyTick] = useState(0);
   const [openRequests, setOpenRequests] = useState<(DocumentRequest & { client?: Profile })[]>([]);
@@ -201,6 +206,33 @@ export default function LawyerDashboard() {
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [profile, active]);
+
+  useEffect(() => {
+    if (!profile) return;
+    const socket = getRealtimeSocket();
+    const confirmed = consultations.filter((item) => item.status === 'confirmed');
+    confirmed.forEach((item) => socket.emit('room:join', { kind: 'consultation', roomId: item.id }));
+    const onInvite = (payload: { kind: string; roomId: string; mode: 'audio'|'video'; from: string }) => {
+      if (payload.kind !== 'consultation' || payload.from === profile.id || !confirmed.some((item) => item.id === payload.roomId)) return;
+      const accepted = window.confirm(isBn()
+        ? `আপনাকে একটি ${payload.mode === 'video' ? 'ভিডিও' : 'অডিও'} কলে আমন্ত্রণ জানানো হয়েছে। যোগ দেবেন?`
+        : `You have been invited to a ${payload.mode} call. Join now?`);
+      if (accepted) navigate(`/call/consultation/${payload.roomId}?mode=${payload.mode}`);
+    };
+    socket.on('call:invite', onInvite);
+    return () => { socket.off('call:invite', onInvite); };
+  }, [consultations, navigate, profile]);
+
+  const startConsultationCall = (consultation: Consultation, mode: 'audio'|'video') => {
+    const socket = getRealtimeSocket();
+    socket.emit('room:join', { kind: 'consultation', roomId: consultation.id }, (joinAck: any) => {
+      if (!joinAck?.ok) return window.alert(joinAck?.error || 'Could not join consultation room');
+      socket.emit('call:invite', { kind: 'consultation', roomId: consultation.id, mode }, (ack: any) => {
+        if (!ack?.ok) return window.alert(ack?.error || 'Could not start call');
+        navigate(`/call/consultation/${consultation.id}?mode=${mode}&initiator=1`);
+      });
+    });
+  };
 
   if (!profile) return <div className="py-20 text-center text-slate-500">{t('auth.loginTitle')}</div>;
   if (loading) return <LoadingSpinner />;
@@ -442,6 +474,13 @@ export default function LawyerDashboard() {
                       <div className="mt-3 flex gap-2">
                         {c.status === 'pending' && (
                           <button onClick={() => updateConsultationStatus(c.id, 'confirmed')} className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100">{t('lawyerDashboard.acceptBooking')}</button>
+                        )}
+                        {c.status === 'confirmed' && (
+                          <>
+                            <button onClick={() => setChatConsultation(c)} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"><MessageSquare className="h-3.5 w-3.5" />{isBn() ? 'রিয়েল-টাইম বার্তা' : 'Realtime message'}</button>
+                            <button onClick={() => startConsultationCall(c, 'audio')} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"><Phone className="h-3.5 w-3.5" />{isBn() ? 'অডিও কল' : 'Audio call'}</button>
+                            <button onClick={() => startConsultationCall(c, 'video')} className="inline-flex items-center gap-1.5 rounded-lg bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100"><Video className="h-3.5 w-3.5" />{isBn() ? 'ভিডিও কল' : 'Video call'}</button>
+                          </>
                         )}
                         <button onClick={() => updateConsultationStatus(c.id, 'completed')} className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t('lawyerDashboard.markCompleted')}</button>
                         <button onClick={() => updateConsultationStatus(c.id, 'cancelled')} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100">{t('lawyerDashboard.declineBooking')}</button>
@@ -1071,6 +1110,15 @@ export default function LawyerDashboard() {
           )}
         </div>
       )}
-    </DashboardShell>
+          {chatConsultation && (
+        <ConsultationChatDrawer
+          open={true}
+          onClose={() => setChatConsultation(null)}
+          consultationId={chatConsultation.id}
+          otherUser={clients[chatConsultation.client_id] ?? null}
+          consultationTitle={chatConsultation.topic ?? (isBn() ? 'আইনি পরামর্শ' : 'Legal consultation')}
+        />
+      )}
+</DashboardShell>
   );
 }

@@ -1,17 +1,20 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Calendar, FileText, Wallet, Star, AlertTriangle, Plus, Settings as SettingsIcon } from 'lucide-react';
+import { Calendar, FileText, Wallet, Star, AlertTriangle, Plus, Settings as SettingsIcon, MessageSquare, Phone, Video } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
-import type { Consultation, DocumentRequest, Transaction, Dispute } from '@/lib/supabase';
+import type { Consultation, DocumentRequest, Transaction, Dispute, Profile } from '@/lib/supabase';
 import { DashboardShell, StatCard, clientNav } from '@/components/DashboardShell';
 import { LoadingSpinner, EmptyState } from '@/components/LawyerCard';
 import i18n from '@/lib/i18n';
+import { ConsultationChatDrawer } from '@/components/ConsultationChatDrawer';
+import { getRealtimeSocket } from '@/lib/realtime';
 
 export default function ClientDashboard() {
   const { t } = useTranslation();
   const { profile } = useAuth();
+  const navigate = useNavigate();
   const [active, setActive] = useState('overview');
   const [bookings, setBookings] = useState<Consultation[]>([]);
   const [documents, setDocuments] = useState<DocumentRequest[]>([]);
@@ -19,6 +22,8 @@ export default function ClientDashboard() {
   const [disputes, setDisputes] = useState<Dispute[]>([]);
   const [walletBalance, setWalletBalance] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [lawyers, setLawyers] = useState<Record<string, Profile>>({});
+  const [chatConsultation, setChatConsultation] = useState<Consultation | null>(null);
 
   useEffect(() => {
     if (!profile) { setLoading(false); return; }
@@ -30,7 +35,15 @@ export default function ClientDashboard() {
         supabase.from('disputes').select('*').eq('raised_by', profile.id).order('created_at', { ascending: false }),
         supabase.from('wallets').select('balance').eq('user_id', profile.id).maybeSingle(),
       ]);
-      setBookings((bk.data as Consultation[]) ?? []);
+      const consultationRows = (bk.data as Consultation[]) ?? [];
+      setBookings(consultationRows);
+      const lawyerIds = [...new Set(consultationRows.map((item) => item.lawyer_id).filter(Boolean))];
+      if (lawyerIds.length) {
+        const lawyerProfiles = await supabase.from('profiles').select('*').in('id', lawyerIds);
+        const map: Record<string, Profile> = {};
+        for (const item of (lawyerProfiles.data as Profile[]) ?? []) map[item.id] = item;
+        setLawyers(map);
+      }
       setDocuments((dr.data as DocumentRequest[]) ?? []);
       setTransactions((tx.data as Transaction[]) ?? []);
       setDisputes((dp.data as Dispute[]) ?? []);
@@ -38,6 +51,33 @@ export default function ClientDashboard() {
       setLoading(false);
     })();
   }, [profile]);
+
+  useEffect(() => {
+    if (!profile) return;
+    const socket = getRealtimeSocket();
+    const confirmed = bookings.filter((item) => item.status === 'confirmed');
+    confirmed.forEach((item) => socket.emit('room:join', { kind: 'consultation', roomId: item.id }));
+    const onInvite = (payload: { kind: string; roomId: string; mode: 'audio'|'video'; from: string }) => {
+      if (payload.kind !== 'consultation' || payload.from === profile.id || !confirmed.some((item) => item.id === payload.roomId)) return;
+      const accepted = window.confirm(i18n.language === 'bn'
+        ? `আপনাকে একটি ${payload.mode === 'video' ? 'ভিডিও' : 'অডিও'} কলে আমন্ত্রণ জানানো হয়েছে। যোগ দেবেন?`
+        : `You have been invited to a ${payload.mode} call. Join now?`);
+      if (accepted) navigate(`/call/consultation/${payload.roomId}?mode=${payload.mode}`);
+    };
+    socket.on('call:invite', onInvite);
+    return () => { socket.off('call:invite', onInvite); };
+  }, [bookings, navigate, profile]);
+
+  const startConsultationCall = (consultation: Consultation, mode: 'audio'|'video') => {
+    const socket = getRealtimeSocket();
+    socket.emit('room:join', { kind: 'consultation', roomId: consultation.id }, (joinAck: any) => {
+      if (!joinAck?.ok) return window.alert(joinAck?.error || 'Could not join consultation room');
+      socket.emit('call:invite', { kind: 'consultation', roomId: consultation.id, mode }, (ack: any) => {
+        if (!ack?.ok) return window.alert(ack?.error || 'Could not start call');
+        navigate(`/call/consultation/${consultation.id}?mode=${mode}&initiator=1`);
+      });
+    });
+  };
 
   if (!profile) return <div className="py-20 text-center text-slate-500">{t('auth.loginTitle')}</div>;
   if (loading) return <LoadingSpinner />;
@@ -120,6 +160,13 @@ export default function ClientDashboard() {
                   </div>
                   <p className="mt-1 text-sm text-slate-500">{t(`booking.type${b.consultation_type.charAt(0).toUpperCase() + b.consultation_type.slice(1)}`)} · {b.scheduled_at ? new Date(b.scheduled_at).toLocaleString() : ''}</p>
                   <p className="mt-1 text-sm text-emerald-600">{t('common.currency')}{b.price}</p>
+                  {b.status === 'confirmed' && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button onClick={() => setChatConsultation(b)} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"><MessageSquare className="h-3.5 w-3.5" />{i18n.language === 'bn' ? 'রিয়েল-টাইম বার্তা' : 'Realtime message'}</button>
+                      <button onClick={() => startConsultationCall(b, 'audio')} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"><Phone className="h-3.5 w-3.5" />{i18n.language === 'bn' ? 'অডিও কল' : 'Audio call'}</button>
+                      <button onClick={() => startConsultationCall(b, 'video')} className="inline-flex items-center gap-1.5 rounded-lg bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100"><Video className="h-3.5 w-3.5" />{i18n.language === 'bn' ? 'ভিডিও কল' : 'Video call'}</button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -222,6 +269,15 @@ export default function ClientDashboard() {
             <button className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">{t('common.save')}</button>
           </div>
         </div>
+      )}
+      {chatConsultation && (
+        <ConsultationChatDrawer
+          open={true}
+          onClose={() => setChatConsultation(null)}
+          consultationId={chatConsultation.id}
+          otherUser={lawyers[chatConsultation.lawyer_id] ?? null}
+          consultationTitle={chatConsultation.topic ?? (i18n.language === 'bn' ? 'আইনি পরামর্শ' : 'Legal consultation')}
+        />
       )}
     </DashboardShell>
   );

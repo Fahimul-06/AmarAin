@@ -262,6 +262,8 @@ async function canAccessRoom(userId:string, role:string|undefined, kind:RoomKind
   const table = kind === 'document' ? 'document_requests' : 'consultations';
   const record:any = await modelFor(table).findOne({ id: roomId }).lean();
   if (!record) return false;
+  // Consultation communication is unlocked only after the lawyer confirms the booking.
+  if (kind === 'consultation' && record.status !== 'confirmed') return false;
   return [record.client_id, record.lawyer_id, record.assigned_lawyer_id].filter(Boolean).includes(userId);
 }
 
