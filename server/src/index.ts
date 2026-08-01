@@ -126,7 +126,23 @@ app.post('/api/data/:table/insert',requireAuth,async(req:any,res)=>{
   try{const rows=Array.isArray(req.body.rows)?req.body.rows:[req.body.rows];const clean=rows.map((r:any)=>({...r,id:r.id||uuid()}));const data=await modelFor(req.params.table).insertMany(clean);res.status(201).json({data:req.body.returning?data:null,error:null});}catch(e:any){res.status(400).json({data:null,error:{message:e.message}});}
 });
 app.post('/api/data/:table/update',requireAuth,async(req:any,res)=>{
-  try{const filter=buildFilter(req.body.filters);await modelFor(req.params.table).updateMany(filter,{$set:req.body.values});const data=req.body.returning?await modelFor(req.params.table).find(filter).lean():null;res.json({data,error:null});}catch(e:any){res.status(400).json({data:null,error:{message:e.message}});}
+  try{
+    const filter=buildFilter(req.body.filters);
+    if(req.params.table==='consultations' && req.user.role!=='admin'){
+      const requestedStatus=req.body.values?.status;
+      if(['completed','awaiting_client_completion'].includes(requestedStatus)) return res.status(403).json({data:null,error:{message:'Use the protected completion workflow.'}});
+      if(req.user.role==='lawyer'){
+        filter.lawyer_id=req.user.sub;
+        if(requestedStatus && !['confirmed','cancelled'].includes(requestedStatus)) return res.status(403).json({data:null,error:{message:'Lawyers may only confirm or cancel a pending consultation here.'}});
+        if(requestedStatus) filter.status='pending';
+      } else if(req.user.role==='client') {
+        return res.status(403).json({data:null,error:{message:'Clients cannot directly change consultation status.'}});
+      }
+    }
+    await modelFor(req.params.table).updateMany(filter,{$set:req.body.values});
+    const data=req.body.returning?await modelFor(req.params.table).find(filter).lean():null;
+    res.json({data,error:null});
+  }catch(e:any){res.status(400).json({data:null,error:{message:e.message}});}
 });
 app.post('/api/data/:table/delete',requireAuth,async(req:any,res)=>{try{await modelFor(req.params.table).deleteMany(buildFilter(req.body.filters));res.json({data:null,error:null});}catch(e:any){res.status(400).json({data:null,error:{message:e.message}});}});
 
@@ -255,6 +271,67 @@ app.post('/api/ai-assistant',requireAuth,async(req:any,res)=>{
 });
 
 
+
+
+app.get('/api/consultations/pending-client-completion', requireAuth, async (req:any, res) => {
+  try {
+    if (req.user.role !== 'client' && req.user.role !== 'admin') return res.json({ data: [] });
+    const rows:any[] = await modelFor('consultations').find({ client_id: req.user.sub, status: 'awaiting_client_completion' }).sort({ lawyer_completed_at: 1 }).lean();
+    const lawyerIds = [...new Set(rows.map((row:any) => row.lawyer_id).filter(Boolean))];
+    const profiles:any[] = lawyerIds.length ? await modelFor('profiles').find({ id: { $in: lawyerIds } }).lean() : [];
+    const profileMap = new Map(profiles.map((profile:any) => [profile.id, profile]));
+    res.json({ data: rows.map((row:any) => ({ ...row, lawyer: profileMap.get(row.lawyer_id) || null })) });
+  } catch (error:any) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/consultations/:id/lawyer-complete', requireAuth, async (req:any, res) => {
+  try {
+    if (req.user.role !== 'lawyer' && req.user.role !== 'admin') return res.status(403).json({ error: 'Only the assigned lawyer can mark this consultation as completed.' });
+    const filter:any = { id: req.params.id, status: 'confirmed' };
+    if (req.user.role !== 'admin') filter.lawyer_id = req.user.sub;
+    const consultation:any = await modelFor('consultations').findOneAndUpdate(filter, { $set: { status: 'awaiting_client_completion', lawyer_completed_at: new Date(), updated_at: new Date() } }, { new: true }).lean();
+    if (!consultation) return res.status(409).json({ error: 'The consultation is not confirmed, already completed, or does not belong to this lawyer.' });
+    await modelFor('notifications').create({ id: uuid(), user_id: consultation.client_id, type: 'consultation_completion_required', title_en: 'Confirm consultation completion', title_bn: 'পরামর্শ সম্পন্ন হওয়া নিশ্চিত করুন', body_en: 'The lawyer marked the consultation as completed. Please confirm completion to release the service amount.', body_bn: 'আইনজীবী পরামর্শটি সম্পন্ন হিসেবে চিহ্নিত করেছেন। সেবার অর্থ ছাড় করতে অনুগ্রহ করে সম্পন্ন হওয়া নিশ্চিত করুন।', is_read: false });
+    io.to(`consultation:${consultation.id}`).emit('consultation:lawyer-completed', { consultationId: consultation.id });
+    res.json({ data: consultation });
+  } catch (error:any) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/consultations/:id/client-complete', requireAuth, async (req:any, res) => {
+  const dbSession = await mongoose.startSession();
+  try {
+    let completedConsultation:any = null;
+    await dbSession.withTransaction(async () => {
+      const consultation:any = await modelFor('consultations').findOne({ id: req.params.id, client_id: req.user.sub, status: 'awaiting_client_completion' }).session(dbSession);
+      if (!consultation) throw new Error('CONSULTATION_NOT_CONFIRMABLE');
+      const existingCredit = await modelFor('transactions').findOne({ reference_type: 'consultation', reference_id: consultation.id, user_id: consultation.lawyer_id, type: 'credit', status: 'completed' }).session(dbSession);
+      if (existingCredit) throw new Error('PAYMENT_ALREADY_RELEASED');
+      const clientDebit:any = await modelFor('transactions').findOne({ reference_type: 'consultation', reference_id: consultation.id, user_id: consultation.client_id, type: 'debit', status: 'completed' }).session(dbSession);
+      if (!clientDebit) throw new Error('PAYMENT_NOT_HELD');
+      const amount = Number(consultation.lawyer_amount ?? consultation.price ?? 0);
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('INVALID_SERVICE_AMOUNT');
+      const lawyerWallet:any = await modelFor('wallets').findOneAndUpdate({ user_id: consultation.lawyer_id }, { $setOnInsert: { id: uuid(), user_id: consultation.lawyer_id }, $inc: { balance: amount }, $set: { updated_at: new Date() } }, { upsert: true, new: true, session: dbSession });
+      await modelFor('transactions').create([{ id: uuid(), wallet_id: lawyerWallet.id, user_id: consultation.lawyer_id, type: 'credit', amount, description: 'Consultation service amount released after client confirmation', reference_type: 'consultation', reference_id: consultation.id, status: 'completed', payment_method: 'platform_hold' }], { session: dbSession });
+      consultation.status = 'completed';
+      consultation.client_completed_at = new Date();
+      consultation.payment_released_at = new Date();
+      consultation.released_amount = amount;
+      consultation.payment_status = 'released';
+      consultation.updated_at = new Date();
+      await consultation.save({ session: dbSession });
+      completedConsultation = consultation.toObject();
+      await modelFor('notifications').create([{ id: uuid(), user_id: consultation.lawyer_id, type: 'consultation_payment_released', title_en: 'Consultation payment released', title_bn: 'পরামর্শের অর্থ ছাড় হয়েছে', body_en: `The client confirmed completion. BDT ${amount} was added to your account.`, body_bn: `ক্লায়েন্ট সম্পন্ন হওয়া নিশ্চিত করেছেন। আপনার অ্যাকাউন্টে ${amount} টাকা যোগ হয়েছে।`, is_read: false }], { session: dbSession });
+    });
+    io.to(`consultation:${req.params.id}`).emit('consultation:completed', { consultationId: req.params.id });
+    res.json({ data: completedConsultation });
+  } catch (error:any) {
+    if (error.message === 'CONSULTATION_NOT_CONFIRMABLE') return res.status(409).json({ error: 'This consultation is not waiting for your completion confirmation.' });
+    if (error.message === 'PAYMENT_ALREADY_RELEASED') return res.status(409).json({ error: 'The consultation payment has already been released.' });
+    if (error.message === 'INVALID_SERVICE_AMOUNT') return res.status(400).json({ error: 'The consultation has an invalid service amount.' });
+    if (error.message === 'PAYMENT_NOT_HELD') return res.status(409).json({ error: 'The client payment is not held for this consultation.' });
+    res.status(500).json({ error: error.message });
+  } finally { await dbSession.endSession(); }
+});
 
 type RoomKind = 'document' | 'consultation';
 async function canAccessRoom(userId:string, role:string|undefined, kind:RoomKind, roomId:string) {

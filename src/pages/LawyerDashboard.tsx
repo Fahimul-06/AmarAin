@@ -6,7 +6,7 @@ import {
   Clock, TrendingUp, Banknote, Download, Save, Bell, Shield, User as UserIcon,
   MessageSquare, Phone, Video, Siren, Gavel,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase, apiRequest } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import type { Consultation, Review, LawyerProfile, Transaction, DocumentRequest, Dispute, PracticeArea, Profile, EmergencyRequest, DocumentBid } from '@/lib/supabase';
 import { DashboardShell, StatCard, lawyerNav } from '@/components/DashboardShell';
@@ -258,8 +258,21 @@ export default function LawyerDashboard() {
   };
 
   const updateConsultationStatus = async (id: string, status: Consultation['status']) => {
-    await supabase.from('consultations').update({ status, updated_at: new Date().toISOString() }).eq('id', id);
-    setConsultations((c) => c.map((b) => (b.id === id ? { ...b, status } : b)));
+    try {
+      if (status === 'completed') {
+        await apiRequest(`/consultations/${id}/lawyer-complete`, { method: 'POST' });
+        setConsultations((items) => items.map((item) => item.id === id ? { ...item, status: 'awaiting_client_completion' } : item));
+        window.alert(isBn()
+          ? 'ক্লায়েন্টকে সম্পন্ন হওয়া নিশ্চিত করতে বলা হয়েছে। ক্লায়েন্ট নিশ্চিত করার পর অর্থ আপনার অ্যাকাউন্টে যোগ হবে।'
+          : 'The client must now confirm completion. The service amount will be added to your account after client confirmation.');
+        return;
+      }
+      const result = await supabase.from('consultations').update({ status, updated_at: new Date().toISOString() }).eq('id', id);
+      if (result.error) throw new Error(result.error.message);
+      setConsultations((items) => items.map((item) => item.id === id ? { ...item, status } : item));
+    } catch (error: any) {
+      window.alert(error.message || 'Could not update consultation status.');
+    }
   };
 
   const updateDocStatus = async (id: string, status: DocumentRequest['status']) => {
@@ -407,7 +420,7 @@ export default function LawyerDashboard() {
                       {c.status === 'pending' && (
                         <button onClick={() => updateConsultationStatus(c.id, 'confirmed')} className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100">{t('lawyerDashboard.acceptBooking')}</button>
                       )}
-                      <button onClick={() => updateConsultationStatus(c.id, 'completed')} className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t('lawyerDashboard.markCompleted')}</button>
+                      {c.status === 'confirmed' && <button onClick={() => updateConsultationStatus(c.id, 'completed')} className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t('lawyerDashboard.markCompleted')}</button>}
                       <button onClick={() => updateConsultationStatus(c.id, 'cancelled')} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100">{t('lawyerDashboard.declineBooking')}</button>
                     </div>
                   </div>
@@ -442,10 +455,12 @@ export default function LawyerDashboard() {
       {active === 'bookings' && (
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            {['all', 'pending', 'confirmed', 'completed', 'cancelled', 'disputed'].map((f) => (
+            {['all', 'pending', 'confirmed', 'awaiting_client_completion', 'completed', 'cancelled', 'disputed'].map((f) => (
               <button key={f} onClick={() => setFilter(f)}
                 className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${filter === f ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'}`}>
-                {t(`lawyerDashboard.filter${f.charAt(0).toUpperCase() + f.slice(1)}`)}
+                {f === 'awaiting_client_completion'
+                  ? (isBn() ? 'ক্লায়েন্ট নিশ্চিতকরণের অপেক্ষায়' : 'Awaiting client confirmation')
+                  : t(`lawyerDashboard.filter${f.charAt(0).toUpperCase() + f.slice(1)}`)}
               </button>
             ))}
           </div>
@@ -466,7 +481,7 @@ export default function LawyerDashboard() {
                         {c.description && <p className="mt-2 text-sm text-slate-600">{c.description}</p>}
                       </div>
                       <div className="flex flex-col items-end gap-2">
-                        <StatusBadge status={c.status} />
+                        {c.status === 'awaiting_client_completion' ? <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">{isBn() ? 'ক্লায়েন্ট নিশ্চিতকরণের অপেক্ষায়' : 'Awaiting client confirmation'}</span> : <StatusBadge status={c.status} />}
                         <span className="text-sm font-semibold text-emerald-600">{t('common.currency')}{c.price}</span>
                       </div>
                     </div>
@@ -482,7 +497,7 @@ export default function LawyerDashboard() {
                             <button onClick={() => startConsultationCall(c, 'video')} className="inline-flex items-center gap-1.5 rounded-lg bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100"><Video className="h-3.5 w-3.5" />{isBn() ? 'ভিডিও কল' : 'Video call'}</button>
                           </>
                         )}
-                        <button onClick={() => updateConsultationStatus(c.id, 'completed')} className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t('lawyerDashboard.markCompleted')}</button>
+                        {c.status === 'confirmed' && <button onClick={() => updateConsultationStatus(c.id, 'completed')} className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t('lawyerDashboard.markCompleted')}</button>}
                         <button onClick={() => updateConsultationStatus(c.id, 'cancelled')} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100">{t('lawyerDashboard.declineBooking')}</button>
                       </div>
                     )}

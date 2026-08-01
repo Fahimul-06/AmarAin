@@ -102,10 +102,13 @@ export default function BookingPage() {
         client_id: profile.id,
         lawyer_id: lawyer.user_id,
         consultation_type: type,
-        status: 'confirmed',
+        status: 'pending',
         scheduled_at: scheduledAt,
         duration_minutes: duration,
         price: total,
+        lawyer_amount: lawyer.consultation_fee,
+        platform_fee: platformFee,
+        payment_status: paymentMethod === 'wallet' ? 'held' : 'pending',
         topic: topic.trim(),
       })
       .select()

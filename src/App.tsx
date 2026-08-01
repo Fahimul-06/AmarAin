@@ -22,6 +22,7 @@ import LawyerDashboard from '@/pages/LawyerDashboard';
 import AdminDashboard from '@/pages/AdminDashboard';
 import CallRoomPage from '@/pages/CallRoomPage';
 import type { Role } from '@/lib/supabase';
+import CompletionGate from '@/components/CompletionGate';
 
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: Role[] }) {
   const { profile, loading } = useAuth();
@@ -66,7 +67,9 @@ export default function App() {
     <AuthProvider>
       <NotificationProvider>
         <BrowserRouter>
-          <AppRoutes />
+          <CompletionGate>
+            <AppRoutes />
+          </CompletionGate>
         </BrowserRouter>
       </NotificationProvider>
     </AuthProvider>
